@@ -1,0 +1,140 @@
+#include <TinyGsmClient.h>
+#include <PubSubClient.h>
+#include <MicroOcpp.h>
+
+#define TINY_GSM_MODEM_SIM800
+#define SerialMon Serial
+#define SerialAT Serial1
+
+const char apn[]  = "internet"; 
+const char user[] = "";
+const char pass[] = "";
+
+// MQTT Broker
+const char* broker = "85.105.100.7";
+const int   port   = 1883;
+const char* mqttUser = "abdulhamit";
+const char* mqttPass = "q12345";
+
+// OCPP Backend
+#define OCPP_BACKEND_URL   "ws://iottest.oncharge.xyz"
+#define OCPP_CHARGE_BOX_ID "onc3"
+
+TinyGsm modem(SerialAT);
+
+// İki farklı soket
+TinyGsmClient gsmClientOcpp(modem, 0); // OCPP socket
+TinyGsmClient gsmClientMqtt(modem, 1); // MQTT socket
+PubSubClient mqtt(gsmClientMqtt);
+
+
+bool activeMode = false;
+
+// MQTT callback
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String message;
+  for (int i = 0; i < length; i++) message += (char)payload[i];
+  SerialMon.print("[MQTT Mesaj] "); SerialMon.println(message);
+
+  if (String(topic) == "esp1/control") {
+    if (message == "activate") {
+      activeMode = true;
+      mqtt.subscribe("esp1/from_server");
+      mqtt.publish("esp1/status", "ESP aktif");
+      SerialMon.println("[MQTT] Aktifleştirme alındı");
+
+    } else if (message == "deactivate") {
+      activeMode = false;
+      mqtt.unsubscribe("esp1/from_server");
+      mqtt.publish("esp1/status", "ESP pasif");
+      SerialMon.println("[MQTT] Pasifleştirme alındı");
+    }
+  
+  SerialAT.println("hello");
+
+}
+
+}
+
+void mqttReconnect() {
+  while (!mqtt.connected()) {
+    SerialMon.print("[MQTT] Bağlanıyor...");
+    if (mqtt.connect("ESP1", mqttUser, mqttPass)) {
+      SerialMon.println("başarılı!");
+      mqtt.subscribe("esp1/control");
+      mqtt.publish("esp1/status", "ESP MQTT bağlı");
+    } else {
+      SerialMon.print("Hata rc=");
+      SerialMon.println(mqtt.state());
+      delay(5000);
+    }
+  }
+}
+
+void checkOcpp() {
+  static unsigned long lastReconnect = 0;
+  if (!ocppPermitsCharge() && millis() - lastReconnect > 120000) {
+    SerialMon.println("[OCPP] Bağlantı sorunlu, cihaz resetleniyor...");
+    ESP.restart();
+  }
+}
+
+void setup() {
+  SerialMon.begin(115200);
+  SerialAT.begin(115200, SERIAL_8N1, 44, 43);
+  delay(3000);
+
+  SerialMon.println("SIM800 başlatılıyor...");
+  modem.restart();
+
+  SerialMon.print("GPRS bağlanıyor...");
+  if (!modem.gprsConnect(apn, user, pass)) {
+    SerialMon.println("başarısız!");
+    while (true) delay(1000);
+  }
+  SerialMon.println("başarılı!");
+
+  // Multi-socket ayarı
+  modem.sendAT("+CIPMUX=1");
+  modem.waitResponse();
+  modem.sendAT("+CIPRXGET=1");
+  modem.waitResponse();
+
+  // MQTT
+  mqtt.setServer(broker, port);
+  mqtt.setCallback(mqttCallback);
+  mqtt.setKeepAlive(60);
+  mqtt.setSocketTimeout(30);
+
+  // OCPP (socket 1 kullanılacak)
+  mocpp_initialize(OCPP_BACKEND_URL, OCPP_CHARGE_BOX_ID,
+                   "My Charging Station", "My company name");
+
+  // Debug
+  SerialMon.println("IMEI: " + modem.getIMEI());
+  SerialMon.println("Operator: " + modem.getOperator());
+  SerialMon.print("Signal Quality: ");
+  SerialMon.println(modem.getSignalQuality());
+  SerialMon.print("Yerel IP: ");
+  SerialMon.println(modem.localIP());
+}
+
+void loop() {
+  if (!mqtt.connected()) mqttReconnect();
+  mqtt.loop();
+
+  mocpp_loop();
+  checkOcpp();
+
+  static unsigned long lastDebug = 0;
+  if (millis() - lastDebug > 20000) {
+    SerialMon.println("=== Durum Raporu ===");
+    SerialMon.print("MQTT: ");
+    SerialMon.println(mqtt.connected() ? "Bağlı" : "Kopmuş");
+    SerialMon.print("OCPP izin: ");
+    SerialMon.println(ocppPermitsCharge() ? "EVET" : "HAYIR");
+    lastDebug = millis();
+  }
+
+  delay(10);
+}
