@@ -24,9 +24,8 @@ TinyGsm modem(SerialAT);
 
 // İki farklı soket
 TinyGsmClient gsmClientOcpp(modem, 0); // OCPP socket
-TinyGsmClient gsmClientMqtt(modem, 1); // MQTT socket
-PubSubClient mqtt(gsmClientMqtt);
-
+TinyGsmClient mqttClient(modem, 1);    // MQTT socket
+PubSubClient mqtt(mqttClient);
 
 bool activeMode = false;
 
@@ -50,10 +49,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       SerialMon.println("[MQTT] Pasifleştirme alındı");
     }
   
-  SerialAT.println("hello");
-
-}
-
+    SerialAT.println("hello");
+  }
 }
 
 void mqttReconnect() {
